@@ -1,0 +1,2 @@
+# Active local session only; wired Falchion RX Low Profile vendor interface.
+ACTION=="add|change", SUBSYSTEM=="hidraw", ENV{ID_VENDOR_ID}=="0b05", ENV{ID_MODEL_ID}=="1b04", ENV{ID_USB_INTERFACE_NUM}=="01", TAG+="uaccess"

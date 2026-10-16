@@ -1,0 +1,132 @@
+#!/usr/bin/env python3
+"""Small, wired-only lighting controller for ASUS 0b05:1b04, interface 01."""
+import argparse
+import fcntl
+import os
+from pathlib import Path
+import select
+import struct
+import sys
+import time
+
+DESCRIPTOR = bytes.fromhex('06 00 ff 09 01 a1 01 09 02 75 08 95 40 15 00 26 ff 00 81 02 09 03 75 08 95 40 15 00 26 ff 00 91 02 c0')
+MODES = {'static': 0, 'breathing': 1, 'cycle': 2, 'reactive': 3, 'wave': 4, 'starry': 6, 'raindrop': 9}
+
+def effect_payloads(mode, rgb, brightness, speed):
+    """Build vendor payloads; Falchion RX wave uses countdown chunks 2,1,0."""
+    speed_byte = {'slow':255, 'medium':128, 'fast':1}[speed]
+    if mode == 'wave':
+        first = bytes([0x51, 0x2c, 4, 2, speed_byte, brightness, 1, 0, 2])
+        return [first.ljust(15, b'\0'),
+                bytes([0x51, 0x2c, 4, 1]).ljust(15, b'\0'),
+                bytes([0x51, 0x2c, 4, 0]).ljust(15, b'\0')]
+    return [bytes([0x51, 0x2c, MODES[mode], 0, speed_byte, brightness, 0, 0, 2]) + rgb]
+
+def discover():
+    found = []
+    for node in Path('/sys/class/hidraw').glob('hidraw*'):
+        device = node / 'device'
+        try:
+            props = dict(line.split('=', 1) for line in (device / 'uevent').read_text().splitlines() if '=' in line)
+            if props.get('HID_ID') != '0003:00000B05:00001B04':
+                continue
+            parent = device.resolve()
+            interface = next((p for p in parent.parents if (p / 'bInterfaceNumber').exists()), None)
+            if interface is None or (interface / 'bInterfaceNumber').read_text().strip() != '01':
+                continue
+            if (device / 'report_descriptor').read_bytes() != DESCRIPTOR:
+                raise RuntimeError('Unexpected lighting HID descriptor; refusing device access')
+            found.append(Path('/dev') / node.name)
+        except FileNotFoundError:
+            continue
+    if len(found) != 1:
+        raise RuntimeError(f'Expected one wired Falchion RX Low Profile lighting interface; found {len(found)}')
+    return found[0]
+
+def exchange(fd, payload):
+    # Bound stale-response draining. Never read keyboard input interfaces.
+    for _ in range(16):
+        if not select.select([fd], [], [], 0)[0]:
+            break
+        os.read(fd, 64)
+    packet = bytes([0]) + bytes(payload).ljust(64, b'\0')
+    if len(packet) != 65:
+        raise RuntimeError('Invalid report length')
+    if not select.select([], [fd], [], 1)[1]:
+        raise RuntimeError('Timed out waiting to write')
+    if os.write(fd, packet) != len(packet):
+        raise RuntimeError('Short HID write')
+    if not select.select([fd], [], [], 1)[0]:
+        raise RuntimeError('No response from keyboard; outcome unconfirmed')
+    reply = os.read(fd, 64)
+    print('Response:', reply.hex(' '))
+    if not reply.startswith(payload):
+        raise RuntimeError('Unexpected response; outcome unconfirmed')
+    return reply
+
+def color(value):
+    value = value.removeprefix('#')
+    if len(value) != 6 or any(c not in '0123456789abcdefABCDEF' for c in value):
+        raise argparse.ArgumentTypeError('Use six hexadecimal digits, e.g. 336699')
+    return bytes.fromhex(value)
+
+def main():
+    parser = argparse.ArgumentParser(description=__doc__)
+    sub = parser.add_subparsers(dest='command', required=True)
+    sub.add_parser('info', help='Identify the wired control interface without sending commands')
+    sub.add_parser('probe', help='Send a version query; does not change lighting')
+    lighting = sub.add_parser('set', help='Set a hardware lighting effect')
+    lighting.add_argument('mode', choices=MODES)
+    lighting.add_argument('color', type=color, help='RGB hex color (ignored by cycle and wave)')
+    lighting.add_argument('--brightness', type=int, choices=range(0, 101), default=50, metavar='0..100')
+    lighting.add_argument('--speed', choices=['slow', 'medium', 'fast'], default='medium')
+    lighting.add_argument('--save', action='store_true', help='Explicitly apply/save to keyboard memory')
+    lighting.add_argument('--dry-run', action='store_true', help='Print payload without accessing hardware')
+    args = parser.parse_args()
+    payloads = []
+    if args.command == 'set':
+        payloads = effect_payloads(args.mode, args.color, args.brightness, args.speed)
+        if args.dry_run:
+            for payload in payloads:
+                print('Report (zero report ID + 64-byte payload):', (b'\0' + payload.ljust(64, b'\0')).hex(' '))
+            return
+    path = discover()
+    print(f'ROG Falchion RX Low Profile 0b05:1b04, USB interface 01: {path}')
+    if args.command == 'info':
+        print('Descriptor verified. No HID commands sent.')
+        return
+    fd = os.open(path, os.O_RDWR | os.O_NONBLOCK | os.O_CLOEXEC | os.O_NOFOLLOW)
+    try:
+        fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        # Recheck identity on the opened fd to guard against device-node reuse.
+        info = bytearray(8)
+        fcntl.ioctl(fd, 0x80084803, info, True)
+        if struct.unpack('Ihh', info) != (3, 0x0b05, 0x1b04):
+            raise RuntimeError('Opened device identity mismatch')
+        size = bytearray(4)
+        fcntl.ioctl(fd, 0x80044801, size, True)
+        if struct.unpack('I', size)[0] != len(DESCRIPTOR):
+            raise RuntimeError('Opened device descriptor length mismatch')
+        descriptor = bytearray(4100)
+        struct.pack_into('I', descriptor, 0, len(DESCRIPTOR))
+        fcntl.ioctl(fd, 0x90044802, descriptor, True)
+        if descriptor[4:4 + len(DESCRIPTOR)] != DESCRIPTOR:
+            raise RuntimeError('Opened device descriptor mismatch')
+        exchange(fd, b'\x12\x00')
+        if payloads:
+            for payload in payloads:
+                time.sleep(0.06)
+                exchange(fd, payload)
+            if args.save:
+                time.sleep(0.06)
+                exchange(fd, b'\x50\x55')
+            print('Lighting command replied; confirm appearance on keyboard.')
+    finally:
+        os.close(fd)
+
+if __name__ == '__main__':
+    try:
+        main()
+    except (OSError, RuntimeError) as error:
+        print(f'Error: {error}', file=sys.stderr)
+        sys.exit(1)

@@ -1,0 +1,221 @@
+.TH FALCHION-LIGHT 1 "2026-10-15" "Falchion Light" "User Commands"
+.SH NAME
+falchion-light \- control wired ROG Falchion RX Low Profile lighting
+.SH SYNOPSIS
+.B falchion-light
+.RB [ \-h | \-\-help ]
+.br
+.B falchion-light info
+.RB [ \-h | \-\-help ]
+.br
+.B falchion-light probe
+.RB [ \-h | \-\-help ]
+.br
+.B falchion-light set
+.I mode color
+.RB [ \-\-brightness " 0..100" ]
+.RB [ \-\-speed " slow|medium|fast" ]
+.RB [ \-\-save ]
+.RB [ \-\-dry-run ]
+.RB [ \-h | \-\-help ]
+.SH DESCRIPTION
+.B falchion-light
+controls lighting through the existing Linux hidraw driver on a wired ASUS
+ROG Falchion RX Low Profile keyboard, USB ID 0b05:1b04, interface 01.
+It requires Python 3 and device access granted by the installed udev rule.
+No daemon or custom kernel module is needed.
+.PP
+Commands can be run from any directory. Each
+.B set
+command specifies a complete effect, color, and brightness;
+previous settings are not read back or preserved automatically.
+.SH COMMANDS
+.TP
+.B info
+Identify the wired lighting interface and verify its descriptor.
+Does not open the device or send HID commands.
+.TP
+.B probe
+Verify the opened device and send a version query.
+Print the device identification and raw response without changing lighting.
+.TP
+.BI "set " "mode color"
+Query the device, then send the requested lighting effect.
+See MODES and OPTIONS below.
+.SH MODES
+.TP
+.B static
+Steady light in the specified color.
+.TP
+.B breathing
+Fade the specified color in and out.
+.TP
+.B cycle
+Cycle through rainbow colors. A color argument is still required,
+but its value is ignored by this effect; use
+.BR 000000 .
+.TP
+.B wave
+Move a rainbow wave across the keys, with different colors visible at once.
+A color argument is required but ignored; use
+.BR 000000 .
+Uses three lighting packets and runs in the keyboard hardware.
+.TP
+.B reactive
+Light keys in response to keypresses using the specified color.
+.TP
+.B starry
+Starry-night effect using the specified color.
+.TP
+.B raindrop
+Raindrop effect using the specified color.
+.SH ARGUMENTS AND OPTIONS
+.TP
+.I color
+Exactly six hexadecimal RGB digits, such as
+.BR 336699 .
+Uppercase and lowercase digits are accepted.
+An optional leading # must be quoted in the shell, for example
+.BR \(aq#336699\(aq .
+Named colors such as blue or red are not accepted.
+.TP
+.BI "\-\-brightness " number
+Integer from 0 (off) to 100 (maximum). Default: 50.
+Repeat a command with nonzero brightness to restore lighting.
+.TP
+.BI "\-\-speed " speed
+Accepts
+.BR slow ,
+.BR medium ,
+or
+.BR fast .
+Default: medium. Controls animation speed; static lighting does not animate.
+.TP
+.B \-\-save
+Send the community-documented apply/save command after setting the effect.
+The keyboard acknowledged saving rainbow wave at slow speed and 50 percent
+brightness; persistence after a power cycle still needs confirmation.
+Without it, no explicit save command is sent.
+Persistence across power cycles is unverified.
+.TP
+.B \-\-dry-run
+Print the proposed output report and exit without discovering or opening
+hardware. Does not send a version query, effect command, or save command.
+.TP
+.BR \-h ", " \-\-help
+Show help and exit. Available at the top level and after each command.
+.SH EXAMPLES
+Identify the device:
+.PP
+.nf
+    falchion-light info
+    falchion-light probe
+.fi
+.PP
+Steady blue at half brightness:
+.PP
+.nf
+    falchion-light set static 336699 \-\-brightness 50
+.fi
+.PP
+Warm orange at 25 percent brightness:
+.PP
+.nf
+    falchion-light set static ff8800 \-\-brightness 25
+.fi
+.PP
+Blue breathing:
+.PP
+.nf
+    falchion-light set breathing 336699 \-\-speed slow \-\-brightness 50
+.fi
+.PP
+Rainbow color cycle:
+.PP
+.nf
+    falchion-light set cycle 000000 \-\-speed medium \-\-brightness 50
+.fi
+.PP
+Rainbow wave moving across the keys:
+.PP
+.nf
+    falchion-light set wave 000000 \-\-speed slow \-\-brightness 50
+.fi
+.PP
+Blue on keypress, starry night, and raindrops:
+.PP
+.nf
+    falchion-light set reactive 336699 \-\-brightness 50
+    falchion-light set starry 336699 \-\-speed slow \-\-brightness 50
+    falchion-light set raindrop 336699 \-\-speed medium \-\-brightness 50
+.fi
+.PP
+Turn lighting off, then restore steady blue:
+.PP
+.nf
+    falchion-light set static 336699 \-\-brightness 0
+    falchion-light set static 336699 \-\-brightness 50
+.fi
+.PP
+Inspect a command without accessing hardware:
+.PP
+.nf
+    falchion-light set breathing 336699 \-\-speed slow \-\-dry-run
+.fi
+.PP
+Save rainbow wave to the keyboard (power-cycle persistence unverified):
+.PP
+.nf
+    falchion-light set wave 000000 \-\-speed slow \-\-brightness 50 \-\-save
+.fi
+.PP
+Show command-specific help:
+.PP
+.nf
+    falchion-light set \-\-help
+.fi
+.SH EXIT STATUS
+.TP
+.B 0
+Command completed, or help was displayed.
+A successful lighting response should still be checked visually.
+.TP
+.B 1
+Device discovery, validation, access, or communication failed.
+If a response times out after a write, the lighting outcome is unconfirmed.
+.TP
+.B 2
+Invalid command-line arguments.
+.SH FILES
+.TP
+.I ~/.local/bin/falchion-light
+Installed executable.
+.TP
+.I ~/.local/share/man/man1/falchion-light.1
+Installed manual page.
+.TP
+.I /etc/udev/rules.d/70-falchion-light.rules
+Grants the active local desktop user access to the wired lighting interface.
+.TP
+.I README.md (in the source checkout)
+Source documentation, validation notes, and removal instructions.
+.SH LIMITATIONS
+Only wired USB is supported. Receiver and Bluetooth control are unsupported.
+As of 2026-10-15, static blue at 50 percent brightness was visually confirmed
+on this unit. Other animated effects besides the confirmed rainbow wave
+follow community protocol evidence and remain unverified here.
+.PP
+The wave command returned expected acknowledgments for all three packets;
+The rainbow wave was visually confirmed on the test keyboard.
+.PP
+The program requires exactly one matching device and an exact supported
+descriptor. It does not update firmware, reset the keyboard, accept arbitrary
+HID commands, or read typing interfaces.
+.SH TROUBLESHOOTING
+If no matching device is found, connect the keyboard with a USB data cable
+and select wired mode.
+If access is denied, verify the installed udev rule and reconnect the keyboard
+while logged into the local desktop session.
+.SH SEE ALSO
+.BR man (1),
+.BR udev (7)
